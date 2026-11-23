@@ -10,7 +10,7 @@ import { fetchApiUsage, AuthError } from './api.js';
 const TICK = 'tick'; // 1 min: re-evaluate resets, badge
 const POLL = 'poll'; // 5 min: API refresh
 const FREE_RECHECK_MS = 60 * 60 * 1000;
-const AFTER_MESSAGE_DELAY_MS = 1500; // let the server account the message before reading /usage
+const AFTER_MESSAGE_DELAY_MS = 2500; // let the server account the message before reading /usage
 const THRESHOLDS = [80, 100];
 const WINDOWS = [
   ['fiveHour', '5-hour limit'],

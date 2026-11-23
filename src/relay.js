@@ -4,7 +4,7 @@
 window.addEventListener('message', (e) => {
   if (e.source !== window || e.origin !== location.origin) return;
   const d = e.data;
-  if (d?.source !== 'claude-usage-ext:message_limit' || typeof d.payload !== 'object') return;
+  if (d?.source !== 'claude-usage-ext:message_limit' || typeof d.payload !== 'object') return; // null = no event
   chrome.runtime.sendMessage({ type: 'message_limit', payload: d.payload, meta: d.meta ?? null }).catch(() => {});
 });
 

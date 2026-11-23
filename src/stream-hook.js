@@ -26,6 +26,12 @@
     }
   }
 
+  /** Prefer the request's id if that message is on the page; otherwise the newest user message. */
+  function resolveKey(fromBody, conv) {
+    if (fromBody && document.querySelector(`[data-turn-key="${fromBody}"] [data-testid="user-message"]`)) return fromBody;
+    return lastUserMessageId(conv) ?? fromBody;
+  }
+
   /** Fallback: the newest user message on the page (the one this reply answers). */
   function lastUserMessageId(conv) {
     if (!location.pathname.includes(conv)) return null; // user switched chats meanwhile
@@ -52,9 +58,10 @@
       if (match && res.ok && res.body) {
         const conv = match[1];
         const retry = !!match[2];
+        // Posted when the reply finishes, even without a message_limit event (paid plans may not
+        // get one): the extension then reads /usage to work out what this message cost.
         scan(res.clone().body).then(async (ml) => {
-          if (!ml) return;
-          const key = (humanP && (await humanP)) || lastUserMessageId(conv);
+          const key = resolveKey((humanP && (await humanP)) || null, conv);
           const meta = { conv, retry, key };
           window.postMessage({ source: TAG, payload: ml, meta }, location.origin);
         });
@@ -65,7 +72,7 @@
     return res;
   };
 
-  /** Resolves with the message_limit payload after the stream ends (null if none). */
+  /** Resolves after the stream ends with its message_limit payload (null if there was none). */
   async function scan(body) {
     const reader = body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = '';
