@@ -11,6 +11,9 @@
   const COMPLETION = /\/chat_conversations\/([^/?]+)\/(retry_)?completion(\?|$)/;
   const origFetch = window.fetch;
 
+  // Diagnostics: filter the page console by "Usage Meter".
+  const log = (...a) => console.info('[Usage Meter]', ...a);
+
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   /** The human message's id, if the request body carries it (turn_message_uuids). */
@@ -48,21 +51,30 @@
     try {
       const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
       match = url.match(COMPLETION);
-      if (match) humanP = readHumanUuid(input, init);
+      if (match) {
+        humanP = readHumanUuid(input, init);
+        log('reply started', match[1]);
+      } else {
+        const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+        if (method === 'POST' && url.includes('/chat_conversations/')) log('other POST (not tracked):', url);
+      }
     } catch {
       match = null;
     }
 
     const res = await origFetch.apply(this, args);
     try {
+      if (match && !(res.ok && res.body)) log('reply not readable', res.status);
       if (match && res.ok && res.body) {
         const conv = match[1];
         const retry = !!match[2];
         // Posted when the reply finishes, even without a message_limit event (paid plans may not
         // get one): the extension then reads /usage to work out what this message cost.
         scan(res.clone().body).then(async (ml) => {
-          const key = resolveKey((humanP && (await humanP)) || null, conv);
+          const fromBody = (humanP && (await humanP)) || null;
+          const key = resolveKey(fromBody, conv);
           const meta = { conv, retry, key };
+          log('reply finished', { conv, key, fromBody, messageLimitEvent: !!ml });
           window.postMessage({ source: TAG, payload: ml, meta }, location.origin);
         });
       }
