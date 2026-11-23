@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Claude Usage Meter",
-  "version": "3.5.1",
+  "version": "3.6.0",
   "description": "Shows your claude.ai 5-hour and weekly usage limits on Free, Pro and Max.",
   "minimum_chrome_version": "116",
   "icons": {

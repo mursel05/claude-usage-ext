@@ -1,81 +1,131 @@
-// Runs in claude.ai's MAIN world. Wraps fetch to watch completion requests:
-//  - notes which user message the reply belongs to (its id), to show the cost under it, and
-//  - scans a clone of the response stream for the `message_limit` SSE event (the Free plan's
-//    only usage source). The page reads its own stream untouched.
-// The event is forwarded once the stream has finished, so the reply is fully accounted.
+// Runs in claude.ai's MAIN world. Wraps fetch to watch reply streams:
+//  - legacy REST: POST .../chat_conversations/<id>/(retry_)completion (SSE, JSON events)
+//  - current:     POST /claudeai-rpc/...ConversationService/StreamTimeline (Connect, protobuf)
+// When a reply stream the user started finishes, it tells the extension which user message the
+// reply belongs to, so the extension can read /usage and show what that message cost. It also
+// scans the stream for the `message_limit` event (the Free plan's usage data, legacy JSON form).
+// The page reads its own stream untouched.
 (() => {
   if (window.__claudeUsageHook) return;
   window.__claudeUsageHook = true;
 
   const TAG = 'claude-usage-ext:message_limit';
-  const COMPLETION = /\/chat_conversations\/([^/?]+)\/(retry_)?completion(\?|$)/;
+  const LEGACY = /\/chat_conversations\/([0-9a-f-]{36})\/(retry_)?completion(\?|$)/i;
+  const RPC_STREAM = /\/claudeai-rpc\/[^?]*ConversationService\/Stream[A-Za-z]*(\?|$)/;
+  const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+  const USER_MESSAGE = '[data-testid="user-message"]';
+  // A reply stream counts as the user's only if they sent/retried/edited shortly before it.
+  // Opening a chat also starts a timeline stream; that one must not be billed to a message.
+  const ACTION_WINDOW_MS = 20000;
   const origFetch = window.fetch;
 
   // Diagnostics: filter the page console by "Usage Meter".
   const log = (...a) => console.info('[Usage Meter]', ...a);
 
-  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  // ---------- what the user just did ----------
 
-  /** The human message's id, if the request body carries it (turn_message_uuids). */
-  async function readHumanUuid(input, init) {
+  let lastActionAt = 0;
+  const ACTION_BUTTON = /send|submit|retry|regenerate|try again|save|edit/i;
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+      if (e.target instanceof Element && e.target.closest('[contenteditable="true"], textarea')) lastActionAt = Date.now();
+    },
+    true,
+  );
+  document.addEventListener(
+    'click',
+    (e) => {
+      const b = e.target instanceof Element ? e.target.closest('button') : null;
+      if (!b) return;
+      const name = `${b.getAttribute('aria-label') ?? ''} ${b.type === 'submit' ? 'submit' : ''} ${b.textContent ?? ''}`;
+      if (ACTION_BUTTON.test(name)) lastActionAt = Date.now();
+    },
+    true,
+  );
+
+  // ---------- which message / conversation ----------
+
+  const urlOf = (input) => (typeof input === 'string' ? input : input instanceof Request ? input.url : String(input));
+  const methodOf = (input, init) => (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+
+  /** Request body as text (protobuf bodies decode lossily, which is fine for finding ids). */
+  async function bodyText(input, init) {
     try {
-      let body = init?.body;
-      if (body == null && input instanceof Request) body = await input.clone().text();
-      if (typeof body !== 'string') return null;
-      const id = JSON.parse(body)?.turn_message_uuids?.human_message_uuid;
+      const b = init?.body ?? (input instanceof Request ? await input.clone().arrayBuffer() : null);
+      if (b == null) return '';
+      if (typeof b === 'string') return b;
+      if (b instanceof ArrayBuffer || ArrayBuffer.isView(b)) return new TextDecoder().decode(b);
+      if (b instanceof Blob) return await b.text();
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
+  /** Legacy JSON body: turn_message_uuids.human_message_uuid. */
+  function humanUuidFromJson(text) {
+    try {
+      const id = JSON.parse(text)?.turn_message_uuids?.human_message_uuid;
       return typeof id === 'string' && UUID.test(id) ? id : null;
     } catch {
       return null;
     }
   }
 
-  /** Prefer the request's id if that message is on the page; otherwise the newest user message. */
-  function resolveKey(fromBody, conv) {
-    if (fromBody && document.querySelector(`[data-turn-key="${fromBody}"] [data-testid="user-message"]`)) return fromBody;
-    return lastUserMessageId(conv) ?? fromBody;
-  }
-
-  /** Fallback: the newest user message on the page (the one this reply answers). */
+  /** The newest user message on the page (the one this reply answers). */
   function lastUserMessageId(conv) {
-    if (!location.pathname.includes(conv)) return null; // user switched chats meanwhile
-    const all = document.querySelectorAll('[data-testid="user-message"]');
-    const el = all[all.length - 1];
-    const id = el?.closest('[data-turn-key]')?.getAttribute('data-turn-key');
+    if (conv && !location.pathname.includes(conv)) return null; // user switched chats meanwhile
+    const all = document.querySelectorAll(USER_MESSAGE);
+    const id = all[all.length - 1]?.closest('[data-turn-key]')?.getAttribute('data-turn-key');
     return id && UUID.test(id) ? id : null;
   }
 
+  /** Prefer the request's id if that message is on the page; otherwise the newest user message. */
+  function resolveKey(fromBody, conv) {
+    if (fromBody && document.querySelector(`[data-turn-key="${fromBody}"] ${USER_MESSAGE}`)) return fromBody;
+    return lastUserMessageId(conv) ?? fromBody;
+  }
+
+  const convFromPath = () => location.pathname.match(UUID)?.[0] ?? null;
+
+  // ---------- fetch wrapper ----------
+
   window.fetch = async function (...args) {
     const [input, init] = args;
-    let match = null;
-    let humanP = null;
+    let kind = null; // 'legacy' | 'rpc'
+    let legacy = null;
+    let started = 0;
+    let textP = null;
     try {
-      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
-      match = url.match(COMPLETION);
-      if (match) {
-        humanP = readHumanUuid(input, init);
-        log('reply started', match[1]);
-      } else {
-        const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
-        if (method === 'POST' && url.includes('/chat_conversations/')) log('other POST (not tracked):', url);
+      const url = urlOf(input);
+      legacy = url.match(LEGACY);
+      if (legacy) kind = 'legacy';
+      else if (methodOf(input, init) === 'POST' && RPC_STREAM.test(url)) kind = 'rpc';
+      if (kind) {
+        started = Date.now();
+        textP = bodyText(input, init);
+        log('reply started', kind, url.split('/').pop());
       }
     } catch {
-      match = null;
+      kind = null;
     }
 
     const res = await origFetch.apply(this, args);
     try {
-      if (match && !(res.ok && res.body)) log('reply not readable', res.status);
-      if (match && res.ok && res.body) {
-        const conv = match[1];
-        const retry = !!match[2];
-        // Posted when the reply finishes, even without a message_limit event (paid plans may not
-        // get one): the extension then reads /usage to work out what this message cost.
+      if (kind && !(res.ok && res.body)) log('reply not readable', res.status);
+      if (kind && res.ok && res.body) {
+        const userStarted = kind === 'legacy' || started - lastActionAt < ACTION_WINDOW_MS;
         scan(res.clone().body).then(async (ml) => {
-          const fromBody = (humanP && (await humanP)) || null;
-          const key = resolveKey(fromBody, conv);
-          const meta = { conv, retry, key };
-          log('reply finished', { conv, key, fromBody, messageLimitEvent: !!ml });
-          window.postMessage({ source: TAG, payload: ml, meta }, location.origin);
+          const text = (await textP) || '';
+          const conv = legacy?.[1] ?? text.match(UUID)?.[0] ?? convFromPath();
+          const key = resolveKey(kind === 'legacy' ? humanUuidFromJson(text) : null, conv);
+          const meta = { conv, retry: !!legacy?.[2], key };
+          log('reply finished', { kind, ...meta, userStarted, messageLimitEvent: !!ml });
+          // Free plan data is useful either way; a cost is only recorded for user-started replies.
+          if (!userStarted && !ml) return;
+          window.postMessage({ source: TAG, payload: ml, meta: userStarted ? meta : null }, location.origin);
         });
       }
     } catch {
@@ -106,6 +156,7 @@
             // Partial or non-JSON line: ignore.
           }
         }
+        if (buf.length > 1 << 20) buf = buf.slice(-4096); // binary streams have few newlines
       }
     } catch {
       // Stream aborted (Stop button, navigation): report what we have.
