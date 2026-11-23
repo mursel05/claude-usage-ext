@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Claude usage</h1>
+    </header>
+
+    <div id="empty" class="notice" hidden><span id="empty-text"></span></div>
+
+    <section class="gauges">
+      <div class="gauge" id="g-five">
+        <svg viewBox="0 0 100 100" aria-hidden="true">
+          <circle class="track" cx="50" cy="50" r="42" />
+          <circle class="bar" cx="50" cy="50" r="42" />
+        </svg>
+        <div class="value"><span class="pct">–</span></div>
+        <div class="label">5-hour</div>
+        <div class="reset"></div>
+      </div>
+      <div class="gauge" id="g-week">
+        <svg viewBox="0 0 100 100" aria-hidden="true">
+          <circle class="track" cx="50" cy="50" r="42" />
+          <circle class="bar" cx="50" cy="50" r="42" />
+        </svg>
+        <div class="value"><span class="pct">–</span></div>
+        <div class="label">Weekly</div>
+        <div class="reset"></div>
+      </div>
+    </section>
+
+    <label class="setting">
+      <span>
+        <span class="setting-title">Show on claude.ai</span>
+        <span class="setting-hint">Usage meter above the message box</span>
+      </span>
+      <input type="checkbox" id="overlay" role="switch" />
+    </label>
+
+    <label class="setting">
+      <span>
+        <span class="setting-title">Show cost on messages</span>
+        <span class="setting-hint">Usage each sent message used, under the message</span>
+      </span>
+      <input type="checkbox" id="msgcost" role="switch" />
+    </label>
+
+    <footer>
+      <span id="updated" class="muted"></span>
+    </footer>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>
