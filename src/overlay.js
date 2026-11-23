@@ -58,12 +58,10 @@
     if (!els) return;
     const s = els.pill.style;
     const r = composerBox()?.getBoundingClientRect();
-    if (!r || r.width === 0) {
-      // No composer on this page: bottom-right of the window.
-      s.right = `${16}px`;
-      s.bottom = `${16}px`;
-      return;
-    }
+    // Only pages with a message box (chat, new chat, projects, code…) show the meter.
+    const show = !!r && r.width > 0;
+    if (els.pill.hidden === show) els.pill.hidden = !show;
+    if (!show) return;
     s.right = `${Math.max(0, window.innerWidth - r.right)}px`;
     s.bottom = `${Math.max(0, window.innerHeight - r.top) + GAP}px`;
   }

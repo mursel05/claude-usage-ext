@@ -6,7 +6,7 @@ A Brave / Chrome extension that shows your **claude.ai usage limits** (the 5-hou
 
 ## Features
 
-- **Meter above the message box.** Shows the 5-hour and weekly usage as bars with percentages. It sits just above the composer, aligned to its right edge, and moves with it when the box grows, the window is resized or the sidebar is toggled. It never blocks clicks.
+- **Meter above the message box.** Shows the 5-hour and weekly usage as bars with percentages. It sits just above the composer, aligned to its right edge, and moves with it when the box grows, the window is resized or the sidebar is toggled. It only appears on pages with a message box (chats, new chat, projects, Code) and never blocks clicks.
 - **Cost of every message.** Under each message you send, a small label shows how much of your limits that message used, e.g. `+2% 5h · +0% 7d`. A retry is added to the message it re-answers.
 - **Toolbar badge.** The extension icon shows your 5-hour usage %, colored green (under 70%), amber (70–89%) or red (90% and up).
 - **Popup.** Two ring gauges with time to reset and the exact reset time, plus when the data was last updated.
