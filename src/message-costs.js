@@ -11,8 +11,6 @@
   let costs = {};
   let enabled = true;
   let timer = null;
-  let lastLog = '';
-  const log = (...a) => console.info('[Usage Meter]', ...a);
 
   const conversationId = () => location.pathname.match(/\/chat\/([0-9a-f-]{36})/i)?.[1] ?? null;
   const fmt = (d) => (d == null ? '–' : `+${Number.isInteger(d) ? d : d.toFixed(1)}%`);
@@ -60,14 +58,6 @@
       }
       if (badge.textContent !== text) badge.textContent = text;
     }
-    // Diagnostics: which message ids are on the page vs. which have a stored cost.
-    if (conv) {
-      const onPage = [...document.querySelectorAll(USER_MESSAGE)].map(
-        (el) => el.closest('[data-turn-key]')?.getAttribute('data-turn-key') ?? '(no data-turn-key)',
-      );
-      const line = JSON.stringify({ conv, onPage, stored: Object.keys(c?.items ?? {}) });
-      if (line !== lastLog) log('messages', JSON.parse((lastLog = line)));
-    }
     if (!enabled) document.querySelectorAll(`.${BADGE}`).forEach((b) => b.remove());
   }
 
@@ -77,7 +67,6 @@
 
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== 'local') return;
-    if (ch.lastMessage?.newValue) log('cost result', ch.lastMessage.newValue);
     if (ch.msgCosts) costs = ch.msgCosts.newValue ?? {};
     if (ch.showMsgCost) enabled = ch.showMsgCost.newValue !== false;
     if (ch.msgCosts || ch.showMsgCost) schedule();

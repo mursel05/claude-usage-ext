@@ -19,9 +19,6 @@
   const ACTION_WINDOW_MS = 20000;
   const origFetch = window.fetch;
 
-  // Diagnostics: filter the page console by "Usage Meter".
-  const log = (...a) => console.info('[Usage Meter]', ...a);
-
   // ---------- what the user just did ----------
 
   let lastActionAt = 0;
@@ -106,7 +103,6 @@
       if (kind) {
         started = Date.now();
         textP = bodyText(input, init);
-        log('reply started', kind, url.split('/').pop());
       }
     } catch {
       kind = null;
@@ -114,7 +110,6 @@
 
     const res = await origFetch.apply(this, args);
     try {
-      if (kind && !(res.ok && res.body)) log('reply not readable', res.status);
       if (kind && res.ok && res.body) {
         const userStarted = kind === 'legacy' || started - lastActionAt < ACTION_WINDOW_MS;
         scan(res.clone().body).then(async (ml) => {
@@ -122,7 +117,6 @@
           const conv = legacy?.[1] ?? text.match(UUID)?.[0] ?? convFromPath();
           const key = resolveKey(kind === 'legacy' ? humanUuidFromJson(text) : null, conv);
           const meta = { conv, retry: !!legacy?.[2], key };
-          log('reply finished', { kind, ...meta, userStarted, messageLimitEvent: !!ml });
           // Free plan data is useful either way; a cost is only recorded for user-started replies.
           if (!userStarted && !ml) return;
           window.postMessage({ source: TAG, payload: ml, meta: userStarted ? meta : null }, location.origin);

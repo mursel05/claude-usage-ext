@@ -140,8 +140,8 @@ const MAX_CONVERSATIONS = 300;
  * A retry re-answers the same user message, so its cost is added to that message.
  */
 async function recordCost(meta, delta) {
-  if (!meta?.conv || !meta.key) return 'no message id';
-  if (!delta || (delta.fiveHour == null && delta.weekly == null)) return 'no usage change known';
+  if (!meta?.conv || !meta.key) return;
+  if (!delta || (delta.fiveHour == null && delta.weekly == null)) return;
   const { msgCosts = {} } = await store.get('msgCosts');
   const c = (msgCosts[meta.conv] ??= { t: 0, items: {} });
   c.t = Date.now();
@@ -160,7 +160,6 @@ async function recordCost(meta, delta) {
     for (const id of ids.slice(0, ids.length - MAX_CONVERSATIONS)) delete msgCosts[id];
   }
   await store.set({ msgCosts });
-  return 'recorded';
 }
 
 async function onMessageLimit(payload, meta) {
@@ -182,18 +181,7 @@ async function onMessageLimit(payload, meta) {
   }
 
   const { snapshot } = await store.get('snapshot');
-  const result = await recordCost(meta, snapshot?.delta);
-  // Diagnostics, logged in the claude.ai console by message-costs.js.
-  await store.set({
-    lastMessage: {
-      at: Date.now(),
-      plan: plan ?? null,
-      source: done ? 'api' : streamSnap ? 'stream' : 'none',
-      meta: meta ?? null,
-      delta: snapshot?.delta ?? null,
-      result: done || streamSnap ? result : 'no usage data',
-    },
-  });
+  await recordCost(meta, snapshot?.delta);
 }
 
 // ---------- triggers ----------
@@ -204,6 +192,7 @@ function ensureAlarms() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.local.remove('lastMessage'); // left over from the removed console diagnostics
   ensureAlarms();
   pollApi();
 });
