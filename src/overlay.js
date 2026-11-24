@@ -53,17 +53,63 @@
     return best;
   }
 
+  /** True when something (Settings, a modal, a full-page panel) sits on top of the message box. */
+  function covered(r) {
+    if (document.querySelector('[role="dialog"][aria-modal="true"], [role="alertdialog"], dialog[open]')) return true;
+    const x = Math.min(window.innerWidth - 1, Math.max(0, r.left + r.width / 2));
+    const y = Math.min(window.innerHeight - 1, Math.max(0, r.top + Math.min(r.height / 2, 24)));
+    const hit = document.elementFromPoint(x, y);
+    return !!hit && !composerBox()?.contains(hit) && !hit.contains(composerBox());
+  }
+
   function place() {
     frame = null;
     if (!els) return;
     const s = els.pill.style;
     const r = composerBox()?.getBoundingClientRect();
-    // Only pages with a message box (chat, new chat, projects, code…) show the meter.
-    const show = !!r && r.width > 0;
+    // Only pages with a message box (chat, new chat, projects, code…) show the meter, and only
+    // while that box is actually visible: not behind Settings or another dialog.
+    const show = !!r && r.width > 0 && !covered(r);
     if (els.pill.hidden === show) els.pill.hidden = !show;
     if (!show) return;
-    s.right = `${Math.max(0, window.innerWidth - r.right)}px`;
-    s.bottom = `${Math.max(0, window.innerHeight - r.top) + GAP}px`;
+
+    const pw = els.pill.offsetWidth || 150;
+    const ph = els.pill.offsetHeight || 44;
+    const above = { left: r.right - pw, top: r.top - GAP - ph, width: pw, height: ph };
+    const side = { left: r.right + GAP, top: r.top, width: pw, height: ph };
+    // Above the box, right-aligned. If page content sits there (e.g. the greeting on a new chat)
+    // and there is room, beside the box's top-right corner instead.
+    const useSide = overlapsContent(above) && side.left + pw + GAP <= window.innerWidth;
+    const pos = useSide ? side : above;
+    s.left = `${Math.round(Math.max(0, pos.left))}px`;
+    s.top = `${Math.round(Math.max(0, pos.top))}px`;
+  }
+
+  /** True if text, images or controls of the page (outside the chat transcript) are in or near rect. */
+  function overlapsContent(rect) {
+    const box = composerBox();
+    // Checked with a margin, so the meter never butts right up against text either.
+    const m = 16;
+    for (const fx of [0, 0.25, 0.5, 0.75, 1]) {
+      for (const fy of [0, 0.5, 1]) {
+        const x = rect.left - m + (rect.width + 2 * m) * fx;
+        const y = rect.top - m / 2 + (rect.height + m) * fy;
+        if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) continue;
+        for (const el of document.elementsFromPoint(x, y)) {
+          if (el === host || el === document.body || el === document.documentElement) continue;
+          if (box?.contains(el) || el.closest('[data-testid="transcript-sizer"]')) break;
+          if (isContent(el)) return true;
+          break; // only the topmost page element matters
+        }
+      }
+    }
+    return false;
+  }
+
+  function isContent(el) {
+    if (el.closest('svg, img, video, canvas, button, a, input, textarea, select, [role="button"]')) return true;
+    for (const n of el.childNodes) if (n.nodeType === 3 && n.textContent.trim()) return true;
+    return false;
   }
 
   const schedulePlace = () => {
