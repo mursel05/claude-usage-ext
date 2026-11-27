@@ -6,8 +6,8 @@ A Brave / Chrome extension that shows your **claude.ai usage limits** (the 5-hou
 
 ## Features
 
-- **Meter above the message box.** Shows the 5-hour and weekly usage as bars with percentages. It sits just above the composer, aligned to its right edge, and moves with it when the box grows, the window is resized or the sidebar is toggled. It only appears on pages with a visible message box (chats, new chat, projects, Code), hides while Settings or another dialog is open, and never blocks clicks.
-- **Cost of every message.** Under each message you send, a small label shows how much of your limits that message used, e.g. `+2% 5h · +0% 7d`. A retry is added to the message it re-answers.
+- **Meter above the message box.** Shows the 5-hour and weekly usage as bars with percentages. It sits just above the composer, aligned to its right edge, and moves with it when the box grows, the window is resized or the sidebar is toggled. It only appears on pages with a visible message box (chats, new chat, projects, Code), hides while Settings or another dialog is open, moves above notices and Claude's questions docked on top of the box (for example "You've used 75% of your weekly limit"), and never blocks clicks.
+- **Cost of every message.** Under each message you send, in chats and in Code sessions, a small label shows how much of your limits that message used, e.g. `+2% 5h · +0% 7d`. On Pro / Max it is measured from the moment you send until the reply finishes, so long replies with tools are counted in full. A retry is added to the message it re-answers.
 - **Toolbar badge.** The extension icon shows your 5-hour usage %, colored green (under 70%), amber (70–89%) or red (90% and up).
 - **Popup.** Two ring gauges with time to reset and the exact reset time, plus when the data was last updated.
 - **Notifications.** An alert at 80% and at 100% of each window, and another when a maxed-out window resets.
@@ -32,6 +32,7 @@ To update, pull the latest code, click ↻ on the extension card, then reload cl
 
 - claude.ai reports whole percents, so a short message often shows `+0%`. Its cost is still counted, and shows up once the total ticks over.
 - Message costs are recorded from the moment you install the extension. Older messages show no label.
+- On Pro / Max the usage data is account-wide. Anything else that uses your limits while a reply is running (another tab, Claude Code) is counted in that message's label too.
 - On the Free plan there is nothing to poll, so the numbers update only when you send a message.
 - These are claude.ai's internal endpoints and events, not a public API. If Anthropic changes them, the extension may stop working until it is updated.
 
@@ -47,12 +48,12 @@ The plan is detected from the endpoint: if it returns no data, the account is tr
 | File | Role |
 |---|---|
 | `src/api.js` | `/usage` client. Fetches from the service worker with your session cookie, and falls back to a same-origin fetch from an open claude.ai tab. The org is taken from the `lastActiveOrg` cookie, otherwise the first org with chat access. |
-| `src/stream-hook.js` | Runs in the page. Wraps `fetch` and reads a **copy** of each reply stream (the page's own stream is untouched): the Connect RPC `ConversationService/StreamTimeline` that claude.ai uses now, and the older `chat_conversations/<id>/completion` SSE endpoint (scanned for `message_limit`). When a reply you started (send, retry, edit) finishes, it reports which user message it answered (the newest message's `data-turn-key`). Streams started just by opening a chat are ignored. |
+| `src/stream-hook.js` | Runs in the page. Wraps `fetch` and reads a **copy** of each reply stream (the page's own stream is untouched): the Connect RPC `ConversationService/StreamTimeline` that claude.ai uses now, and the older `chat_conversations/<id>/completion` SSE endpoint (scanned for `message_limit`, the Free plan's data). Streams started just by opening a chat are ignored. |
 | `src/relay.js` | Passes stream events to the service worker, and runs the same-origin fallback fetch for `api.js`. |
 | `src/usage.js` | Parsing, treating a window whose reset time has passed as 0%, and the per-message difference (`withDelta`). |
-| `src/background.js` | Chooses the data source, updates the badge, re-checks resets every minute, sends notifications and stores per-message costs (`msgCosts`). |
+| `src/background.js` | Chooses the data source, updates the badge, re-checks resets every minute, sends notifications and stores per-message costs (`msgCosts`). On Pro / Max a sent message stays "active" until its reply finishes: its cost is `/usage` now minus `/usage` at send time, re-read every 30 seconds and once more at the end. |
 | `src/overlay.js` | The meter above the message box (Shadow DOM, click-through). |
-| `src/message-costs.js` | Writes the cost label under each sent message, matched by `data-turn-key`. |
+| `src/message-costs.js` | Runs on every claude.ai page. Notices when you send a message (a new `data-turn-key` right after Enter or a send / retry / edit click) and when its reply finishes (the Stop button goes away), and writes the cost label under each sent message. Labels are matched by message id, so the page's URL format doesn't matter. |
 | `popup/` | Gauges, reset times and the two toggles. |
 
 **Permissions:** `storage`, `alarms`, `notifications`, `cookies` (only to read `lastActiveOrg`) and access to `claude.ai`.

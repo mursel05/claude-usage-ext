@@ -121,6 +121,7 @@ function pollApi({ fromMessage = false } = {}) {
       return false;
     } finally {
       await recompute();
+      await updateActive();
     }
   })().finally(() => (polling = null));
   return polling;
@@ -162,26 +163,95 @@ async function recordCost(meta, delta) {
   await store.set({ msgCosts });
 }
 
+// Paid plans: a sent message stays "active" until its reply finishes (the page's Stop button goes
+// away), the next message is sent, or ACTIVE_MAX_MS passes. Its cost is /usage now minus /usage
+// when it was sent, re-read every 30 s and at the end, so long replies (tools, Code sessions) are
+// fully counted whatever transport the page uses. /usage is account-wide: usage from elsewhere in
+// the same minutes (another tab, Claude Code) lands on this message too.
+// active: { conv, key, base: {fiveHour, weekly}, prev (retry: cost so far), since }
+const ACTIVE = 'active';
+const ACTIVE_MAX_MS = 20 * 60 * 1000;
+const SAME_WINDOW_MS = 2 * 60 * 1000;
+const round2 = (n) => Math.round(n * 100) / 100;
+
+/** Percentage points used in a window since `base`; if the window reset meanwhile, all of `now`. */
+function growth(base, now) {
+  if (!base || !now) return null;
+  const same = base.resetsAt && now.resetsAt && Math.abs(base.resetsAt - now.resetsAt) < SAME_WINDOW_MS;
+  return same ? round2(Math.max(0, now.percent - base.percent)) : now.percent;
+}
+
+async function onMessageSent({ conv, key, retry }) {
+  if (!conv || !key) return;
+  const { plan, active } = await store.get(['plan', 'active']);
+  if (plan === 'free') return; // Free: the cost comes from the reply stream (onMessageLimit)
+
+  if (retry && active?.key === key) {
+    await store.set({ active: { ...active, since: Date.now() } });
+  } else {
+    await pollApi(); // fresh reading before the reply uses anything
+    const { snapshot, plan: p, msgCosts = {} } = await store.get(['snapshot', 'plan', 'msgCosts']);
+    const base = currentUsage(snapshot);
+    if (p === 'free' || !base) return;
+    // A retry answers the same message again: add to what it already cost.
+    const prev = retry ? Object.values(msgCosts).find((c) => c.items?.[key])?.items[key] ?? null : null;
+    await store.set({
+      active: { conv, key, prev, base: { fiveHour: base.fiveHour, weekly: base.weekly }, since: Date.now() },
+    });
+  }
+  chrome.alarms.create(ACTIVE, { periodInMinutes: 0.5 });
+}
+
+/** The reply finished: final reading, then stop measuring (later usage is not this message's). */
+async function onReplyDone({ key }) {
+  await sleep(AFTER_MESSAGE_DELAY_MS); // let the server account the reply (and onMessageSent settle)
+  const { active } = await store.get('active');
+  if (active?.key !== key) return;
+  await pollApi();
+  const { active: now } = await store.get('active');
+  if (now?.key !== key) return; // a newer message was sent meanwhile
+  await store.remove('active');
+  await chrome.alarms.clear(ACTIVE);
+}
+
+/** Called after every /usage read: updates the active message's cost. */
+async function updateActive() {
+  const { active, snapshot } = await store.get(['active', 'snapshot']);
+  if (!active) return;
+  if (Date.now() - active.since > ACTIVE_MAX_MS) {
+    await store.remove('active');
+    await chrome.alarms.clear(ACTIVE);
+    return;
+  }
+  if (snapshot?.source !== 'api') return;
+  const now = currentUsage(snapshot);
+  const plus = (a, b) => (a == null ? b : b == null ? a : round2(a + b));
+  await recordCost(
+    { conv: active.conv, key: active.key },
+    {
+      fiveHour: plus(active.prev?.fiveHour, growth(active.base.fiveHour, now?.fiveHour)),
+      weekly: plus(active.prev?.weekly, growth(active.base.weekly, now?.weekly)),
+    },
+  );
+}
+
 async function onMessageLimit(payload, meta) {
   const streamSnap = parseMessageLimit(payload);
   const { plan } = await store.get('plan');
 
-  let done = false;
+  // Paid: the cost is tracked by the active message; just read /usage now that the reply is done.
   if (plan !== 'free') {
     await sleep(AFTER_MESSAGE_DELAY_MS);
-    done = await pollApi({ fromMessage: true });
+    if (await pollApi()) return;
   }
 
   // Free plan, or the API was unreachable: use the stream numbers.
-  if (!done) {
-    if (!streamSnap) return;
-    const { snapshot: prev } = await store.get('snapshot');
-    await store.set({ snapshot: withDelta(prev, { ...streamSnap, source: 'stream' }) });
-    await recompute();
-  }
-
-  const { snapshot } = await store.get('snapshot');
-  await recordCost(meta, snapshot?.delta);
+  if (!streamSnap) return;
+  const { snapshot: prev } = await store.get('snapshot');
+  const snapshot = withDelta(prev, { ...streamSnap, source: 'stream' });
+  await store.set({ snapshot });
+  await recompute();
+  await recordCost(meta, snapshot.delta);
 }
 
 // ---------- triggers ----------
@@ -192,7 +262,14 @@ function ensureAlarms() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.remove('lastMessage'); // left over from the removed console diagnostics
+  chrome.storage.local.remove(['lastMessage', 'dbgSent', 'dbgBg', 'dbgErr']); // old diagnostics
+  // Test data from development builds.
+  chrome.storage.local.get('msgCosts').then(({ msgCosts }) => {
+    if (msgCosts?.__debug) {
+      delete msgCosts.__debug;
+      chrome.storage.local.set({ msgCosts });
+    }
+  });
   ensureAlarms();
   pollApi();
 });
@@ -203,6 +280,7 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name === TICK) recompute();
   if (a.name === POLL && (await shouldPoll())) pollApi();
+  if (a.name === ACTIVE) pollApi();
 });
 
 chrome.notifications.onClicked.addListener(() => chrome.tabs.create({ url: 'https://claude.ai/new' }));
@@ -216,7 +294,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(sendResponse);
     return true;
   }
-  if (msg?.type === 'message_limit' && sender.url?.startsWith('https://claude.ai/')) {
-    onMessageLimit(msg.payload, msg.meta);
-  }
+  if (!sender.url?.startsWith('https://claude.ai/')) return;
+  if (msg?.type === 'message_limit') onMessageLimit(msg.payload, msg.meta);
+  if (msg?.type === 'message_sent') onMessageSent(msg);
+  if (msg?.type === 'reply_done') onReplyDone(msg);
 });

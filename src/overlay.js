@@ -32,7 +32,7 @@
     .pct { text-align: right; }
   `;
 
-  /** Outermost painted box (background/border/shadow + rounded) around the editor, under 200px tall. */
+  /** Outermost painted box (background/border/shadow + rounded) around the editor, below page size. */
   function composerBox() {
     const editor =
       document.querySelector('[data-testid="chat-input"]') ||
@@ -42,7 +42,8 @@
     let best = editor;
     for (let el = editor.parentElement; el && el !== document.body; el = el.parentElement) {
       const r = el.getBoundingClientRect();
-      if (r.height > 200) break;
+      // The box grows with attachments and long drafts; stop before reaching page-level containers.
+      if (r.height > window.innerHeight * 0.6) break;
       const s = getComputedStyle(el);
       const painted =
         parseFloat(s.borderTopWidth) > 0 ||
@@ -75,7 +76,41 @@
 
     s.left = s.top = '';
     s.right = `${Math.max(0, window.innerWidth - r.right)}px`;
-    s.bottom = `${Math.max(0, window.innerHeight - r.top) + GAP}px`;
+    s.bottom = `${Math.max(0, window.innerHeight - dockTop(r)) + GAP}px`;
+  }
+
+  /**
+   * Top of what claude.ai shows docked on top of the message box: notices ("You've used 75%…"),
+   * Claude's questions with their choices, etc. They live in the same sticky footer as the box,
+   * so the meter goes above them instead of covering them. Without such content: the box's top.
+   */
+  function dockTop(r) {
+    const box = composerBox();
+    let dock = null;
+    for (let el = box?.parentElement; el && el !== document.body; el = el.parentElement) {
+      if (el.getBoundingClientRect().height > window.innerHeight * 0.6) break;
+      if (getComputedStyle(el).position === 'sticky') dock = el;
+    }
+    if (!dock) return r.top;
+    let top = r.top;
+    // Only what is under the meter's own column (right end of the box) matters; e.g. the centred
+    // "jump to latest" arrow doesn't push it up.
+    const left = r.right - (els.pill.offsetWidth || 150);
+    for (const el of dock.querySelectorAll('*')) {
+      if (el === box || box.contains(el) || el.contains(box)) continue;
+      const e = el.getBoundingClientRect();
+      if (e.width < 1 || e.height < 1 || e.bottom > r.top + 1 || e.top >= top) continue;
+      if (e.right < left || e.left > r.right) continue;
+      if (hasContent(el)) top = e.top;
+    }
+    return top;
+  }
+
+  function hasContent(el) {
+    if (el.matches('svg, img, button, input, textarea, [role="button"], [role="radio"], [role="option"]')) return true;
+    for (const n of el.childNodes) if (n.nodeType === 3 && n.textContent.trim()) return true;
+    const s = getComputedStyle(el);
+    return parseFloat(s.borderTopWidth) > 0 || (s.backgroundColor !== 'rgba(0, 0, 0, 0)' && s.backgroundColor !== 'transparent');
   }
 
   const schedulePlace = () => {
